@@ -15,10 +15,30 @@ android {
 //        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // CI（GitHub Actions）：通过环境变量 RELEASE_STORE_FILE 等注入密钥库；本地不设变量则可不打签名包
+    signingConfigs {
+        release {
+            def storePath = System.getenv("RELEASE_STORE_FILE")
+            if (storePath != null && !storePath.trim().isEmpty()) {
+                def kf = file(storePath)
+                if (kf.exists()) {
+                    storeFile kf
+                    storePassword System.getenv("RELEASE_STORE_PASSWORD")
+                    keyAlias System.getenv("RELEASE_KEY_ALIAS")
+                    keyPassword System.getenv("RELEASE_KEY_PASSWORD")
+                }
+            }
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            def storePath = System.getenv("RELEASE_STORE_FILE")
+            if (storePath != null && !storePath.trim().isEmpty() && file(storePath).exists()) {
+                signingConfig signingConfigs.release
+            }
         }
     }
     compileOptions {

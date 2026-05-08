@@ -18,3 +18,8 @@ local.properties
 Di3.0_*/
 firmware_extract/
 tools/payload-dumper-go.tar.gz
+
+# 签名密钥库（勿提交）
+release.keystore
+*.jks
+*.keystore

@@ -1,6 +1,16 @@
-# 推送分支/PR：编译 debug APK，在 Actions → Artifacts 下载。
-# 推送标签 v*（例如 v1.0.0）：同次构建会发布到 GitHub Releases 并附上 APK。
-# 发版示例：git tag v1.0.0 && git push origin v1.0.0
+# 分支 / PR / workflow_dispatch：打 debug APK，在 Actions → Artifacts 下载。
+# 推送标签 v*：打已签名的 release APK，并发布到 GitHub Releases。
+#
+# 仓库 Settings → Secrets and variables → Actions 新增：
+#   RELEASE_KEYSTORE_BASE64  密钥库文件经 Base64 后的整段字符串（.jks / .keystore）
+#   RELEASE_STORE_PASSWORD   密钥库密码
+#   RELEASE_KEY_ALIAS        密钥别名
+#   RELEASE_KEY_PASSWORD     密钥密码（常与仓库密码相同）
+#
+# 本地生成 Base64（示例）:  Linux/macOS: base64 -w0 release.keystore
+#                         Windows PowerShell: [Convert]::ToBase64String([IO.File]::ReadAllBytes("release.keystore"))
+#
+# 发版: git tag v1.0.1 && git push origin v1.0.1
 
 name: Build APK
 
@@ -13,10 +23,9 @@ on:
   workflow_dispatch:
 
 jobs:
-  assemble-debug:
+  build:
     permissions:
       contents: write
-    # 固定在 22.04，避免 ubuntu-latest 升级后与本项目旧版 AGP/Gradle 工具链偶发不兼容
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -24,12 +33,10 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          # AGP 7.2.x 支持 11/17；CI 使用 17 与当前 Actions 镜像更一致
           java-version: "17"
 
       - uses: android-actions/setup-android@v4
         with:
-          # 与 app/build.gradle 中 compileSdk 29 一致；由本步骤一次性装好，避免另起 shell 调 sdkmanager 时 PATH/SDK 根目录不一致
           packages: "tools platform-tools platforms;android-29 build-tools;30.0.3"
 
       - name: Cache Gradle
@@ -43,20 +50,41 @@ jobs:
             ${{ runner.os }}-gradle-
 
       - name: Assemble debug APK
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug --stacktrace --no-daemon
 
-      - name: Upload APK
+      - name: Upload debug APK
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         uses: actions/upload-artifact@v4
         with:
           name: NoWirelessCharge-debug
           path: app/build/outputs/apk/debug/*.apk
 
-      - name: Prepare APK filename for Release
+      - name: Decode release keystore
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+        run: |
+          printf '%s' "$RELEASE_KEYSTORE_BASE64" | base64 -d > "${{ github.workspace }}/release.keystore"
+          test -s "${{ github.workspace }}/release.keystore"
+
+      - name: Assemble release APK
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          RELEASE_STORE_FILE: ${{ github.workspace }}/release.keystore
+          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --stacktrace --no-daemon
+
+      - name: Prepare APK for Release
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          src=$(ls app/build/outputs/apk/debug/*.apk | head -1)
+          src=$(ls app/build/outputs/apk/release/*.apk | head -1)
           cp "$src" "NoWirelessCharge-${{ github.ref_name }}.apk"
 
       - name: Publish GitHub Release
