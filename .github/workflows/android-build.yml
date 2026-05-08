@@ -1,17 +1,21 @@
-# 推送到 GitHub 后自动编译 debug APK，在 Actions 页下载构建产物即可。
-# 若使用 Gitee/GitLab，需各自配置对应的 CI（语法类似，Runner 不同）。
+# 推送分支/PR：编译 debug APK，在 Actions → Artifacts 下载。
+# 推送标签 v*（例如 v1.0.0）：同次构建会发布到 GitHub Releases 并附上 APK。
+# 发版示例：git tag v1.0.0 && git push origin v1.0.0
 
 name: Build APK
 
 on:
   push:
     branches: [main, master]
+    tags: ["v*"]
   pull_request:
     branches: [main, master]
   workflow_dispatch:
 
 jobs:
   assemble-debug:
+    permissions:
+      contents: write
     # 固定在 22.04，避免 ubuntu-latest 升级后与本项目旧版 AGP/Gradle 工具链偶发不兼容
     runs-on: ubuntu-22.04
     steps:
@@ -48,3 +52,16 @@ jobs:
         with:
           name: NoWirelessCharge-debug
           path: app/build/outputs/apk/debug/*.apk
+
+      - name: Prepare APK filename for Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          src=$(ls app/build/outputs/apk/debug/*.apk | head -1)
+          cp "$src" "NoWirelessCharge-${{ github.ref_name }}.apk"
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: NoWirelessCharge-${{ github.ref_name }}.apk
+          generate_release_notes: true
