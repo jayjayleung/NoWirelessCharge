@@ -9,8 +9,8 @@ android {
         applicationId "com.wwm.nowirelesscharge"
         minSdk 22
         targetSdk 29
-        versionCode 3
-        versionName "1.2"
+        versionCode 4
+        versionName "1.2.1"
 
 //        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }

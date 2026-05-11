@@ -1,6 +1,9 @@
 package com.wwm.nowirelesscharge;
 
+import android.content.ContentResolver;
+import android.content.ContentValues;
 import android.content.Context;
+import android.net.Uri;
 import android.util.Log;
 
 import java.lang.reflect.Field;
@@ -9,6 +12,13 @@ import java.lang.reflect.Method;
 
 public class BYDWirelessCharger {
     private static final String TAG = "NoWirelessCharge";
+    private static final Uri CAR_SETTINGS_USER_URI =
+            Uri.parse("content://carsettings/settings");
+    private static final Uri CAR_SETTINGS_SYSTEM_URI =
+            Uri.parse("content://carsettings/system_settings");
+    private static final String CAR_SETTINGS_KEY_WIRELESS_CHARGING = "wireless_charging";
+    private static final String[] CAR_SETTINGS_SELECTION_ARGS =
+            new String[]{CAR_SETTINGS_KEY_WIRELESS_CHARGING};
 
     /** Matches SystemUI WireChargeItem / framework BYDAutoChargingDevice. */
     private static final String CHARGING_DEVICE_CLASS =
@@ -24,30 +34,83 @@ public class BYDWirelessCharger {
                 ? context.getApplicationContext()
                 : context;
 
-        Throwable[] firstFailure = new Throwable[1];
+        StringBuilder routeFailures = new StringBuilder();
 
-        // Prefer AbsBYDAutoDevice#set (whitelist) over public blacklist wrapper.
-        if (invokeLegacySet(state, ctx, firstFailure)) {
+        // SystemUI uses the direct device API on this firmware, so try that first.
+        if (invokeDirectSwitchSetter(state, ctx, routeFailures)) {
             return;
         }
-        if (invokeDirectSwitchSetter(state, ctx, firstFailure)) {
+        if (invokeLegacySet(state, ctx, routeFailures)) {
+            return;
+        }
+        if (writeCarSettingsFallback(state, ctx, routeFailures)) {
             return;
         }
 
         String msg = "Failed to toggle wireless charging. state=" + state
-                + " (1=on, 2=off — same as BYD CHARGE_WIRELESS_CHARGING_*)";
-        if (firstFailure[0] != null) {
-            Log.e(TAG, msg, firstFailure[0]);
-        } else {
-            Log.e(TAG, msg);
+                + " (1=on, 2=off - same as BYD CHARGE_WIRELESS_CHARGING_*)"
+                + ". routes=" + routeFailures;
+        Log.e(TAG, msg);
+    }
+
+    static private void appendRouteFailure(StringBuilder routeFailures, String route, Throwable t) {
+        Throwable cause = unwrap(t);
+        if (routeFailures.length() > 0) {
+            routeFailures.append(" | ");
         }
+        routeFailures.append(route)
+                .append(": ")
+                .append(cause.getClass().getSimpleName());
+        if (cause.getMessage() != null && !cause.getMessage().isEmpty()) {
+            routeFailures.append(" (").append(cause.getMessage()).append(")");
+        }
+        Log.w(TAG, "Wireless charging route failed: " + route, cause);
+    }
+
+    static private void appendRouteFailure(StringBuilder routeFailures, String route, String detail) {
+        if (routeFailures.length() > 0) {
+            routeFailures.append(" | ");
+        }
+        routeFailures.append(route).append(": ").append(detail);
+        Log.w(TAG, "Wireless charging route failed: " + route + " (" + detail + ")");
+    }
+
+    static private boolean tryCarSettingsWrite(Uri uri, int value, String route, Context context,
+                                               StringBuilder routeFailures) {
+        try {
+            ContentResolver resolver = context.getContentResolver();
+            ContentValues contentValues = new ContentValues();
+            contentValues.put("value", value);
+
+            int updated = resolver.update(uri, contentValues, "key=?", CAR_SETTINGS_SELECTION_ARGS);
+            if (updated > 0) {
+                Log.i(TAG, route + " updated rows=" + updated + ", value=" + value);
+                return true;
+            }
+            appendRouteFailure(routeFailures, route, "rows_updated=" + updated);
+        } catch (Throwable t) {
+            appendRouteFailure(routeFailures, route, t);
+        }
+        return false;
+    }
+
+    static private boolean writeCarSettingsFallback(int state, Context context,
+                                                    StringBuilder routeFailures) {
+        int providerValue = state == 1 ? 1 : 0;
+        if (tryCarSettingsWrite(CAR_SETTINGS_USER_URI, providerValue,
+                "carsettings_user", context, routeFailures)) {
+            return true;
+        }
+        return tryCarSettingsWrite(CAR_SETTINGS_SYSTEM_URI, providerValue,
+                "carsettings_system", context, routeFailures);
     }
 
     static private void tryEnableHiddenApiExemption() {
         try {
             Method forName = Class.class.getDeclaredMethod("forName", String.class);
-            Method getDeclaredMethod = Class.class.getDeclaredMethod("getDeclaredMethod", String.class, Class[].class);
-            Class vmRuntimeClass = (Class) forName.invoke(null, "dalvik.system.VMRuntime");
+            Method getDeclaredMethod = Class.class.getDeclaredMethod(
+                    "getDeclaredMethod", String.class, Class[].class);
+            Class<?> vmRuntimeClass = (Class<?>) forName.invoke(null, "dalvik.system.VMRuntime");
             Method getRuntime = (Method) getDeclaredMethod.invoke(vmRuntimeClass, "getRuntime", null);
             Object vmRuntime = getRuntime.invoke(null);
             Method setHiddenApiExemptions = (Method) getDeclaredMethod.invoke(
@@ -83,12 +146,14 @@ public class BYDWirelessCharger {
         }
     }
 
-    static private boolean invokeDirectSwitchSetter(int state, Context context, Throwable[] firstFailure) {
+    static private boolean invokeDirectSwitchSetter(int state, Context context,
+                                                    StringBuilder routeFailures) {
         try {
             Class<?> deviceClass = Class.forName(CHARGING_DEVICE_CLASS);
             Method getInstance = resolveGetInstance(deviceClass);
             Object device = getInstance.invoke(null, context);
-            Method setWirelessChargingSwitchState = resolveSetWirelessChargingSwitchState(deviceClass);
+            Method setWirelessChargingSwitchState =
+                    resolveSetWirelessChargingSwitchState(deviceClass);
             Object ret = setWirelessChargingSwitchState.invoke(device, state);
 
             if (ret instanceof Integer) {
@@ -99,9 +164,7 @@ public class BYDWirelessCharger {
             }
             return true;
         } catch (Throwable t) {
-            if (firstFailure[0] == null) {
-                firstFailure[0] = unwrap(t);
-            }
+            appendRouteFailure(routeFailures, "direct_setter", t);
             return false;
         }
     }
@@ -124,7 +187,8 @@ public class BYDWirelessCharger {
         }
     }
 
-    static private boolean invokeLegacySet(int state, Context context, Throwable[] firstFailure) {
+    static private boolean invokeLegacySet(int state, Context context,
+                                           StringBuilder routeFailures) {
         try {
             Class<?> deviceClass = Class.forName(CHARGING_DEVICE_CLASS);
             Method getInstance = resolveGetInstance(deviceClass);
@@ -146,9 +210,7 @@ public class BYDWirelessCharger {
             Log.i(TAG, "Legacy set result=" + ret + ", state=" + state);
             return true;
         } catch (Throwable t) {
-            if (firstFailure[0] == null) {
-                firstFailure[0] = unwrap(t);
-            }
+            appendRouteFailure(routeFailures, "legacy_set", t);
             return false;
         }
     }
